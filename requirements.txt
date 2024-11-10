@@ -1,7 +1,7 @@
 gradio
+ffmpeg-python
 cryptography
 uuid
-logging
 python-dotenv
 groq
 gtts

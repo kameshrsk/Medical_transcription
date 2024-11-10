@@ -13,7 +13,6 @@ import soundfile as sf
 import numpy as np
 
 load_dotenv()
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [SESSION: %(session_id)s] %(message)s',
@@ -77,15 +76,22 @@ class SecureHealthcareTranslator:
             "Hindi": "hi", "Tamil": "ta"
         }
         self.session_id = ""
+        self.is_decrypted = False
+        self.recorded_audio = None
 
-        self.is_decrypted=False
+    def record_audio(self, audio):
+        """Handle audio recording separately, returning the file path."""
+        if audio is not None:
+            self.recorded_audio = audio
+            return audio
+        return "No audio recorded"
 
-    def process_audio(self, audio_input, audio_upload, source_lang, target_lang, consent):
+    def process_audio(self, audio_path, source_lang, target_lang, consent):
         if not consent:
             return "Please provide consent for processing the audio.", ""
 
         self.session_id = self.security.create_session(consent)
-        audio_path = audio_input or audio_upload
+        
         if not audio_path:
             return "No audio input provided.", ""
 
@@ -110,7 +116,6 @@ class SecureHealthcareTranslator:
             )
             translated_text = completion.choices[0].message.content
 
-            # Encrypting sensitive data
             encrypted_original_text = self.security.encrypt_data(original_text)
             encrypted_translated_text = self.security.encrypt_data(translated_text)
 
@@ -131,8 +136,15 @@ class SecureHealthcareTranslator:
 
 translator = SecureHealthcareTranslator()
 
-def create_gradio_app():
+# Interface to handle audio recording
+record_audio_interface = gr.Interface(
+    fn=translator.record_audio,
+    inputs=gr.Audio(source="microphone", type="filepath"),
+    outputs="text",
+    title="Audio Recording",
+)
 
+def create_gradio_app():
     with gr.Blocks(theme=gr.themes.Soft()) as demo:
         with gr.Row():
             consent = gr.Checkbox(
@@ -148,14 +160,17 @@ def create_gradio_app():
                 choices=list(translator.supported_languages.keys()), value="Spanish", label="Target Language"
             )
 
-        with gr.Row():
-            audio_input = gr.Audio(
-                sources="microphone", type="filepath", label="Record Audio", streaming=True
-            )
-            audio_upload = gr.Audio(
-                sources=["upload"], type="filepath", label="Or Upload Audio File"
-            )
+        # Tabs for recording and uploading audio
+        with gr.Tabs():
+            with gr.Tab("Record Audio"):
+                record_audio_interface.render()  # Render the recording interface here
+                transcribe_button_record = gr.Button("Transcribe & Translate Recorded Audio")
 
+            with gr.Tab("Upload Audio"):
+                audio_upload = gr.Audio(
+                    source="upload", type="filepath", label="Upload Audio File"
+                )
+                transcribe_button_upload = gr.Button("Transcribe & Translate Uploaded Audio")
         with gr.Row():
             transcript = gr.Textbox(
                 label="Secure Transcript", placeholder="Encrypted transcript will appear here...", lines=4, interactive=False
@@ -164,61 +179,83 @@ def create_gradio_app():
                 label="Secure Translation", placeholder="Encrypted translation will appear here...", lines=4, interactive=False
             )
 
+        # Buttons for additional functionalities
         with gr.Row():
-            transcribe_button = gr.Button("Transcribe & Translate")
-            clear_button = gr.Button("Clear")
             play_translation_button = gr.Button("Play Translation")
-            delete_data = gr.Button("Delete My Data")
-            decode_encryption=gr.Button("Decypt")
+            clear_button = gr.Button("Clear")
+            delete_data_button = gr.Button("Delete Data")
+            decrypt_button = gr.Button("Decrypt")
 
-        with gr.Row():
-            play_translation_audio = gr.Audio(label="Play Translated Text")
-
+        play_translation_audio = gr.Audio(label="Play Translated Text")
         status_message = gr.Textbox(label="Status", interactive=False)
 
-        def handle_audio_processing(audio_input, audio_upload, source_lang, target_lang, consent):
-            return translator.process_audio(audio_input, audio_upload, source_lang, target_lang, consent)
+        # Function definitions for button handlers
+        def handle_audio_processing_recorded(source_lang, target_lang, consent):
+            return translator.process_audio(translator.recorded_audio, source_lang, target_lang, consent)
 
-        def handle_data_deletion():
-            if translator.security.end_session(translator.session_id):
-                return "All health records related to the current session have been deleted."
-            return "No data processed in the current session."
+        def handle_audio_processing_uploaded(audio_upload, source_lang, target_lang, consent):
+            return translator.process_audio(audio_upload, source_lang, target_lang, consent)
 
         def play_translation(translation_text, target_lang):
             return translator.text_to_speech(translation_text, target_lang)
 
-        def decrypt(encrypted_transcript, encrypted_translation):
+        def decrypt_texts(encrypted_transcript, encrypted_translation):
+            translator.is_decrypted = True
+            return (
+                translator.security.decrypt_data(encrypted_transcript),
+                translator.security.decrypt_data(encrypted_translation)
+            )
 
-            translator.is_decrypted=True
+        def clear_all_fields():
+            translator.recorded_audio = None
+            return None, "", "", "", None
 
-            return translator.security.decrypt_data(encrypted_transcript), translator.security.decrypt_data(encrypted_translation)
+        def delete_session_data():
+            if translator.security.end_session(translator.session_id):
+                translator.recorded_audio = None
+                return "Data deleted successfully."
+            return "No data to delete."
 
-        def clear_interface():
-            return None, None, "", "", "", None
-
-        transcribe_button.click(
-            fn=handle_audio_processing,
-            inputs=[audio_input, audio_upload, source_lang, target_lang, consent],
+        # Assign functions to buttons
+        transcribe_button_record.click(
+            fn=handle_audio_processing_recorded,
+            inputs=[source_lang, target_lang, consent],
             outputs=[transcript, translation]
         )
 
-        delete_data.click(fn=handle_data_deletion, inputs=[], outputs=[status_message])
+        transcribe_button_upload.click(
+            fn=handle_audio_processing_uploaded,
+            inputs=[audio_upload, source_lang, target_lang, consent],
+            outputs=[transcript, translation]
+        )
 
         play_translation_button.click(
-            fn=play_translation, inputs=[translation, target_lang], outputs=[play_translation_audio]
+            fn=play_translation,
+            inputs=[translation, target_lang],
+            outputs=[play_translation_audio]
         )
 
         clear_button.click(
-            fn=clear_interface, inputs=[], 
-            outputs=[audio_input, audio_upload, transcript, translation, status_message, play_translation_audio]
+            fn=clear_all_fields,
+            inputs=[],
+            outputs=[audio_upload, transcript, translation, status_message, play_translation_audio]
         )
 
-        decode_encryption.click(
-            fn=decrypt, inputs=[transcript, translation], outputs=[transcript, translation]
+        decrypt_button.click(
+            fn=decrypt_texts,
+            inputs=[transcript, translation],
+            outputs=[transcript, translation]
         )
+
+        delete_data_button.click(
+            fn=delete_session_data,
+            inputs=[],
+            outputs=status_message
+        )
+
     return demo
 
-app=create_gradio_app()
+app = create_gradio_app()
 
 if __name__ == "__main__":
     app.launch(share=True)
