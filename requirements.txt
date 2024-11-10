@@ -1,0 +1,9 @@
+gradio
+cryptography
+uuid
+logging
+python-dotenv
+groq
+gtts
+soundfile
+numpy
